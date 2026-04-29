@@ -570,111 +570,21 @@ num_cols_all = (
 )
 num_df['總量表平均'] = row_mean(num_cols_all)
 
-# 6. 題目級統計摘要：每一題一列
-summary_rows = []
+# 從「資料建立日期」欄提取年度資訊
+try:
+    date_col_candidates = [c for c in orig.columns if isinstance(c, str) and '資料建立日期' in c]
+    if date_col_candidates:
+        date_series = orig[date_col_candidates[0]]
+    else:
+        raise KeyError('找不到「資料建立日期」欄位')
+    date_parsed = pd.to_datetime(date_series, errors='coerce')
+    num_df['_年度'] = date_parsed.dt.year.astype('Int64')
+    unique_years = sorted([int(y) for y in num_df['_年度'].dropna().unique()])
+except Exception as e:
+    print(f'警告：無法取得年度資訊（{e}），將不產生年度分類工作表。')
+    num_df['_年度'] = pd.NA
+    unique_years = []
 
-# Helper to append a section header row
-
-
-def append_section_header(title):
-    row = OrderedDict()
-    row['題目'] = title
-    row['有效樣本數'] = np.nan
-    row['平均數'] = np.nan
-    row['標準差'] = np.nan
-    row['最小值'] = np.nan
-    row['最大值'] = np.nan
-    row['4分以上比例'] = np.nan
-    summary_rows.append(row)
-
-
-def append_question_rows(cols_list):
-    for c in cols_list:
-        # 忽略未對應的 placeholder（由 normalize_list 產生的 '未對應_...'）
-        if isinstance(c, str) and c.startswith('未對應_'):
-            continue
-        num_col = c + '_num'
-        row = OrderedDict()
-        row['題目'] = c
-        if num_col in num_df.columns:
-            s = num_df[num_col].dropna()
-            if s.empty:
-                row['有效樣本數'] = np.nan
-                row['平均數'] = np.nan
-                row['標準差'] = np.nan
-                row['最小值'] = np.nan
-                row['最大值'] = np.nan
-                row['4分以上比例'] = np.nan
-            else:
-                row['有效樣本數'] = int(s.count())
-                row['平均數'] = float(s.mean())
-                row['標準差'] = float(s.std(ddof=1)) if s.count() > 1 else np.nan
-                row['最小值'] = float(s.min())
-                row['最大值'] = float(s.max())
-                row['4分以上比例'] = float((s >= 4).mean())
-        else:
-            row['有效樣本數'] = np.nan
-            row['平均數'] = np.nan
-            row['標準差'] = np.nan
-            row['最小值'] = np.nan
-            row['最大值'] = np.nan
-            row['4分以上比例'] = np.nan
-        # 新增：每分級的數量與比例（1~5）
-        try:
-            if num_col in num_df.columns and not num_df[num_col].dropna().empty:
-                s = num_df[num_col].dropna()
-                counts = s.value_counts()
-                total = float(s.count())
-                # 先加入數量（從 5 到 1），再加入比例（從 5 到 1）
-                for score in range(5, 0, -1):
-                    row[f'{score}分數量'] = int(counts.get(score, 0))
-                for score in range(5, 0, -1):
-                    row[f'{score}分比例'] = float(counts.get(
-                        score, 0)) / total if total > 0 else np.nan
-            else:
-                for score in range(5, 0, -1):
-                    row[f'{score}分數量'] = np.nan
-                for score in range(5, 0, -1):
-                    row[f'{score}分比例'] = np.nan
-        except Exception:
-            for score in range(5, 0, -1):
-                row[f'{score}分數量'] = np.nan
-            for score in range(5, 0, -1):
-                row[f'{score}分比例'] = np.nan
-
-        summary_rows.append(row)
-
-
-# 先加入「壹、個人基本資料與綜合問題」
-append_section_header('壹、個人基本資料與綜合問題')
-append_question_rows(personal_cols)
-
-# 加入「貳、核心能力」：依題號交錯列出（1.1, 1.2, 2.1, 2.2 ...）
-append_section_header('貳、核心能力')
-# 交錯輸出，依照序號配對重要性與達成度
-max_pairs = max(len(core_imp_cols), len(core_fit_cols))
-for i in range(max_pairs):
-    if i < len(core_imp_cols):
-        c_imp = core_imp_cols[i]
-        # 忽略 placeholder
-        if not (isinstance(c_imp, str) and c_imp.startswith('未對應_')):
-            append_question_rows([c_imp])
-    if i < len(core_fit_cols):
-        c_fit = core_fit_cols[i]
-        if not (isinstance(c_fit, str) and c_fit.startswith('未對應_')):
-            append_question_rows([c_fit])
-
-# 加入「參、本系教學成效調查」
-append_section_header('參、本系教學成效調查')
-append_question_rows(edu_cols)
-
-# 加入「肆、本系教學及設備滿意度調查表」
-append_section_header('肆、本系教學及設備滿意度調查表')
-append_question_rows(teach_cols)
-
-summary_df = pd.DataFrame(summary_rows)
-
-# ===== 新增：構面彙整（將核心能力按題號配對，計算複合構面分數）
 # 根據問卷類型調整構面標籤：研究所 / 碩專 使用三個研究導向構面
 if is_grad:
     comp_labels = [
@@ -691,85 +601,314 @@ else:
         '具備體察環境與持續成長之能力'
     ]
 
-comp_rows = []
-for idx, lbl in enumerate(comp_labels):
-    # core_imp_num / core_fit_num 是以題號順序建立的 num 欄位清單
-    imp_col = core_imp_num[idx] if idx < len(core_imp_num) else None
-    fit_col = core_fit_num[idx] if idx < len(core_fit_num) else None
 
-    # 取兩者的列平均作為該構面的個人分數；若只存在其中一個則使用該欄
-    if imp_col and imp_col in num_df.columns and fit_col and fit_col in num_df.columns:
-        series = num_df[[imp_col, fit_col]].mean(axis=1).dropna()
-    elif imp_col and imp_col in num_df.columns:
-        series = num_df[imp_col].dropna()
-    elif fit_col and fit_col in num_df.columns:
-        series = num_df[fit_col].dropna()
-    else:
-        series = pd.Series(dtype=float)
+# 6. 題目級統計摘要：以函式封裝，支援全資料與年度篩選
+def generate_stats(data_df):
+    """根據指定的資料框（可為年度篩選後的子集）產生 (summary_df, comp_df)。"""
+    local_rows = []
 
-    row = OrderedDict()
-    row['構面'] = lbl
-    if series.empty:
-        row['有效樣本數'] = np.nan
-        row['平均數'] = np.nan
-        row['標準差'] = np.nan
-        row['最小值'] = np.nan
-        row['最大值'] = np.nan
-        row['4分以上比例'] = np.nan
-    else:
-        row['有效樣本數'] = int(series.count())
-        row['平均數'] = float(series.mean())
-        row['標準差'] = float(series.std(
-            ddof=1)) if series.count() > 1 else np.nan
-        row['最小值'] = float(series.min())
-        row['最大值'] = float(series.max())
-        row['4分以上比例'] = float((series >= 4).mean())
-    # 計算說明欄（放在 4分以上比例 之後）
-    # 使用個案含分數工作表中的實際欄位與 Excel 範圍來說明來源
-    n_rows = len(num_df)
-    parts = []
-    # 欄位名稱在 num_df 中通常為 原始欄名 + '_num'
-    if imp_col and imp_col in num_df.columns:
-        imp_colname = imp_col
-        imp_idx = list(num_df.columns).index(imp_colname) + 1  # 1-based
-        imp_letter = col_idx_to_excel_col(imp_idx)
-        imp_range = f"{imp_letter}2:{imp_letter}{n_rows+1}"
-        parts.append(f'欄位 {imp_colname} (個案含分數!{imp_range})')
-    if fit_col and fit_col in num_df.columns:
-        fit_colname = fit_col
-        fit_idx = list(num_df.columns).index(fit_colname) + 1
-        fit_letter = col_idx_to_excel_col(fit_idx)
-        fit_range = f"{fit_letter}2:{fit_letter}{n_rows+1}"
-        parts.append(f'欄位 {fit_colname} (個案含分數!{fit_range})')
+    def _append_header(title):
+        row = OrderedDict()
+        row['題目'] = title
+        for col in ['有效樣本數', '平均數', '標準差', '最小值', '最大值', '4分以上比例']:
+            row[col] = np.nan
+        local_rows.append(row)
 
-    if parts:
-        # 使用換行分段顯示，方便 Excel 儲存格閱讀
-        if len(parts) == 2:
-            expl_src = "使用資料來源:\n" + f"- {parts[0]}\n- {parts[1]}\n"
-            expl_calc = '計算規則:\n每位受測者之構面分數 = 重要性(_num)與達成度(_num)兩題之列平均。\n'
+    def _append_questions(cols_list):
+        for c in cols_list:
+            if isinstance(c, str) and c.startswith('未對應_'):
+                continue
+            num_col = c + '_num'
+            row = OrderedDict()
+            row['題目'] = c
+            if num_col in data_df.columns:
+                s = data_df[num_col].dropna()
+                if s.empty:
+                    row['有效樣本數'] = np.nan
+                    row['平均數'] = np.nan
+                    row['標準差'] = np.nan
+                    row['最小值'] = np.nan
+                    row['最大值'] = np.nan
+                    row['4分以上比例'] = np.nan
+                else:
+                    row['有效樣本數'] = int(s.count())
+                    row['平均數'] = float(s.mean())
+                    row['標準差'] = float(s.std(ddof=1)) if s.count() > 1 else np.nan
+                    row['最小值'] = float(s.min())
+                    row['最大值'] = float(s.max())
+                    row['4分以上比例'] = float((s >= 4).mean())
+            else:
+                row['有效樣本數'] = np.nan
+                row['平均數'] = np.nan
+                row['標準差'] = np.nan
+                row['最小值'] = np.nan
+                row['最大值'] = np.nan
+                row['4分以上比例'] = np.nan
+            score_labels = ['極重要', '重要', '普通', '不認同', '極不認同']
+            score_vals   = [5, 4, 3, 2, 1]
+            try:
+                if num_col in data_df.columns and not data_df[num_col].dropna().empty:
+                    s = data_df[num_col].dropna()
+                    counts = s.value_counts()
+                    total = float(s.count())
+                    for lbl, val in zip(score_labels, score_vals):
+                        row[f'{lbl}數量'] = int(counts.get(val, 0))
+                    for lbl, val in zip(score_labels, score_vals):
+                        row[f'{lbl}比例'] = float(counts.get(val, 0)) / total if total > 0 else np.nan
+                else:
+                    for lbl in score_labels:
+                        row[f'{lbl}數量'] = np.nan
+                    for lbl in score_labels:
+                        row[f'{lbl}比例'] = np.nan
+            except Exception:
+                for lbl in score_labels:
+                    row[f'{lbl}數量'] = np.nan
+                for lbl in score_labels:
+                    row[f'{lbl}比例'] = np.nan
+            local_rows.append(row)
+
+    _append_header('壹、個人基本資料與綜合問題')
+    _append_questions(personal_cols)
+
+    _append_header('貳、核心能力')
+    max_pairs = max(len(core_imp_cols), len(core_fit_cols))
+    for i in range(max_pairs):
+        if i < len(core_imp_cols):
+            c_imp = core_imp_cols[i]
+            if not (isinstance(c_imp, str) and c_imp.startswith('未對應_')):
+                _append_questions([c_imp])
+        if i < len(core_fit_cols):
+            c_fit = core_fit_cols[i]
+            if not (isinstance(c_fit, str) and c_fit.startswith('未對應_')):
+                _append_questions([c_fit])
+
+    _append_header('參、本系教學成效調查')
+    _append_questions(edu_cols)
+
+    _append_header('肆、本系教學及設備滿意度調查表')
+    _append_questions(teach_cols)
+
+    s_df = pd.DataFrame(local_rows)
+
+    # 構面彙整
+    c_rows = []
+    for idx, lbl in enumerate(comp_labels):
+        imp_col = core_imp_num[idx] if idx < len(core_imp_num) else None
+        fit_col = core_fit_num[idx] if idx < len(core_fit_num) else None
+
+        if imp_col and imp_col in data_df.columns and fit_col and fit_col in data_df.columns:
+            series = data_df[[imp_col, fit_col]].mean(axis=1).dropna()
+        elif imp_col and imp_col in data_df.columns:
+            series = data_df[imp_col].dropna()
+        elif fit_col and fit_col in data_df.columns:
+            series = data_df[fit_col].dropna()
         else:
-            expl_src = "使用資料來源:\n" + f"- {parts[0]}\n"
-            expl_calc = '計算規則:\n每位受測者之構面分數 = 使用該欄位之數值。\n'
-        expl_tail = '整體統計說明:\n平均、標準差、最小/最大基於上述個人構面分數計算；4分以上比例表示個人構面分數 ≥ 4 的比例。'
-        row['計算說明'] = expl_src + expl_calc + expl_tail
-    else:
-        row['計算說明'] = '此構面在資料中未對應到可計算之題目，無資料可供計算。'
-    comp_rows.append(row)
+            series = pd.Series(dtype=float)
 
-comp_df = pd.DataFrame(comp_rows)
+        row = OrderedDict()
+        row['構面'] = lbl
+        if series.empty:
+            row['有效樣本數'] = np.nan
+            row['平均數'] = np.nan
+            row['標準差'] = np.nan
+            row['最小值'] = np.nan
+            row['最大值'] = np.nan
+            row['4分以上比例'] = np.nan
+        else:
+            row['有效樣本數'] = int(series.count())
+            row['平均數'] = float(series.mean())
+            row['標準差'] = float(series.std(ddof=1)) if series.count() > 1 else np.nan
+            row['最小值'] = float(series.min())
+            row['最大值'] = float(series.max())
+            row['4分以上比例'] = float((series >= 4).mean())
+        # 五級分布（對平均後的分數四捨五入後計算）
+        score_labels = ['極重要', '重要', '普通', '不認同', '極不認同']
+        score_vals   = [5, 4, 3, 2, 1]
+        if not series.empty:
+            rounded = series.round().astype(int)
+            counts = rounded.value_counts()
+            total = float(len(rounded))
+            for lbl, val in zip(score_labels, score_vals):
+                row[f'{lbl}數量'] = int(counts.get(val, 0))
+            for lbl, val in zip(score_labels, score_vals):
+                row[f'{lbl}比例'] = float(counts.get(val, 0)) / total if total > 0 else np.nan
+        else:
+            for lbl in score_labels:
+                row[f'{lbl}數量'] = np.nan
+            for lbl in score_labels:
+                row[f'{lbl}比例'] = np.nan
+        c_rows.append(row)
+
+    c_df = pd.DataFrame(c_rows)
+    return s_df, c_df
+
+
+def generate_comp_year_table(all_df, years):
+    """產生核心能力 × 年度 比例彙整表（百分比）。"""
+    score_labels = ['極重要', '重要', '普通', '不認同', '極不認同']
+    score_vals   = [5, 4, 3, 2, 1]
+
+    def _comp_series(data_df, idx):
+        imp_col = core_imp_num[idx] if idx < len(core_imp_num) else None
+        fit_col = core_fit_num[idx] if idx < len(core_fit_num) else None
+        if imp_col and imp_col in data_df.columns and fit_col and fit_col in data_df.columns:
+            return data_df[[imp_col, fit_col]].mean(axis=1).dropna()
+        elif imp_col and imp_col in data_df.columns:
+            return data_df[imp_col].dropna()
+        elif fit_col and fit_col in data_df.columns:
+            return data_df[fit_col].dropna()
+        return pd.Series(dtype=float)
+
+    rows = []
+    for idx, lbl in enumerate(comp_labels):
+        # 各年度列
+        for yr in years:
+            roc_yr = yr - 1911
+            yr_df = all_df[all_df['_年度'] == yr]
+            s = _comp_series(yr_df, idx)
+            row = OrderedDict()
+            row['核心能力'] = lbl
+            row['年度'] = f'{roc_yr}'
+            if s.empty:
+                for sl in score_labels:
+                    row[sl] = np.nan
+            else:
+                rounded = s.round().astype(int)
+                counts = rounded.value_counts()
+                total = float(len(rounded))
+                for sl, sv in zip(score_labels, score_vals):
+                    row[sl] = (f"{round(counts.get(sv, 0) / total * 100, 1)} %" if total > 0 else np.nan)
+            rows.append(row)
+        # 合計列
+        s_all = _comp_series(all_df, idx)
+        row = OrderedDict()
+        row['核心能力'] = lbl
+        row['年度'] = '合計'
+        if s_all.empty:
+            for sl in score_labels:
+                row[sl] = np.nan
+        else:
+            rounded = s_all.round().astype(int)
+            counts = rounded.value_counts()
+            total = float(len(rounded))
+            for sl, sv in zip(score_labels, score_vals):
+                row[sl] = (f"{round(counts.get(sv, 0) / total * 100, 1)} %" if total > 0 else np.nan)
+        rows.append(row)
+        # 空白分隔列
+        rows.append(OrderedDict([('核心能力', ''), ('年度', '')] + [(sl, np.nan) for sl in score_labels]))
+
+    return pd.DataFrame(rows)
+
+
+def generate_comp_weight_table(all_df, years):
+    """產生核心能力權重表：各年度平均分數與標準差（百分制，1-5分×20），含總分列。"""
+    n = len(comp_labels)
+    weight_pct = f'{round(100 / n)}%' if n > 0 else '—'
+
+    def _comp_series(data_df, idx):
+        imp_col = core_imp_num[idx] if idx < len(core_imp_num) else None
+        fit_col = core_fit_num[idx] if idx < len(core_fit_num) else None
+        if imp_col and imp_col in data_df.columns and fit_col and fit_col in data_df.columns:
+            return data_df[[imp_col, fit_col]].mean(axis=1).dropna()
+        elif imp_col and imp_col in data_df.columns:
+            return data_df[imp_col].dropna()
+        elif fit_col and fit_col in data_df.columns:
+            return data_df[fit_col].dropna()
+        return pd.Series(dtype=float)
+
+    rows = []
+    # 各核心能力 × 各年度
+    for idx, lbl in enumerate(comp_labels):
+        for yr in years:
+            roc_yr = yr - 1911
+            s = _comp_series(all_df[all_df['_年度'] == yr], idx)
+            row = OrderedDict()
+            row['核心能力'] = lbl
+            row['核心能力權重'] = weight_pct
+            row['年度'] = str(roc_yr)
+            if s.empty:
+                row['平均分數'] = np.nan
+                row['標準差'] = np.nan
+            else:
+                row['平均分數'] = round(float(s.mean()) * 20, 1)
+                row['標準差'] = round(float(s.std(ddof=1)) * 20, 1) if s.count() > 1 else np.nan
+            rows.append(row)
+        # 合計列
+        s_all = _comp_series(all_df, idx)
+        row = OrderedDict()
+        row['核心能力'] = lbl
+        row['核心能力權重'] = weight_pct
+        row['年度'] = '合計'
+        if s_all.empty:
+            row['平均分數'] = np.nan
+            row['標準差'] = np.nan
+        else:
+            row['平均分數'] = round(float(s_all.mean()) * 20, 1)
+            row['標準差'] = round(float(s_all.std(ddof=1)) * 20, 1) if s_all.count() > 1 else np.nan
+        rows.append(row)
+
+    # 總分列：各年度加權平均（等權重→直接平均所有構面）
+    for yr in years:
+        roc_yr = yr - 1911
+        yr_df = all_df[all_df['_年度'] == yr]
+        all_series_list = [_comp_series(yr_df, i) for i in range(n)]
+        valid = [s for s in all_series_list if not s.empty]
+        row = OrderedDict()
+        row['核心能力'] = '總分'
+        row['核心能力權重'] = ''
+        row['年度'] = str(roc_yr)
+        if valid:
+            combined = pd.concat(valid)
+            row['平均分數'] = round(float(combined.mean()) * 20, 1)
+            row['標準差'] = round(float(combined.std(ddof=1)) * 20, 1) if combined.count() > 1 else np.nan
+        else:
+            row['平均分數'] = np.nan
+            row['標準差'] = np.nan
+        rows.append(row)
+    # 總分合計
+    all_series_list = [_comp_series(all_df, i) for i in range(n)]
+    valid = [s for s in all_series_list if not s.empty]
+    row = OrderedDict()
+    row['核心能力'] = '總分'
+    row['核心能力權重'] = ''
+    row['年度'] = '合計'
+    if valid:
+        combined = pd.concat(valid)
+        row['平均分數'] = round(float(combined.mean()) * 20, 1)
+        row['標準差'] = round(float(combined.std(ddof=1)) * 20, 1) if combined.count() > 1 else np.nan
+    else:
+        row['平均分數'] = np.nan
+        row['標準差'] = np.nan
+    rows.append(row)
+
+    return pd.DataFrame(rows)
+
 
 # 7. 匯出成新的 Excel 檔（含多個工作表）
 base_name = os.path.splitext(os.path.basename(inp))[0]
 out_path = f"{base_name}_Result.xlsx"
+
+# 產生全資料統計
+summary_df, comp_df = generate_stats(num_df)
+comp_year_df = generate_comp_year_table(num_df, unique_years)
+comp_weight_df = generate_comp_weight_table(num_df, unique_years)
+
 with pd.ExcelWriter(out_path, engine='xlsxwriter') as writer:
     orig.to_excel(writer, sheet_name='原始資料', index=False)
     num_df.to_excel(writer, sheet_name='個案含分數', index=False)
     summary_df.to_excel(writer, sheet_name='題目統計摘要', index=False)
-    # 輸出構面彙整
-    try:
-        comp_df.to_excel(writer, sheet_name='核心能力', index=False)
-    except NameError:
-        # 若 comp_df 未建立（理論不會發生），跳過
-        pass
+    comp_df.to_excel(writer, sheet_name='核心能力', index=False)
+    comp_year_df.to_excel(writer, sheet_name='核心能力_年度比例', index=False)
+    comp_weight_df.to_excel(writer, sheet_name='核心能力_權重表', index=False)
+    # 依年度輸出各年度的統計摘要與核心能力
+    for yr in unique_years:
+        yr_df = num_df[num_df['_年度'] == yr]
+        yr_summary, yr_comp = generate_stats(yr_df)
+        yr_summary.to_excel(writer, sheet_name=f'題目統計_{yr}'[:31], index=False)
+        yr_comp.to_excel(writer, sheet_name=f'核心能力_{yr}'[:31], index=False)
 
 print(f'已產生：{out_path}')
+if unique_years:
+    print(f'已依年度分類：{unique_years}')
+else:
+    print('警告：BA 欄無法解析年度資訊，未產生年度分類工作表。')
