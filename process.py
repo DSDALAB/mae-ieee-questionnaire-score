@@ -811,7 +811,7 @@ def generate_stats(data_df):
 
 
 def generate_comp_year_table(all_df, years):
-    """產生核心能力 × 年度 比例彙整表（百分比）。"""
+    """產生核心能力 × 年度比例彙整表，並計算五點量表平均分數。"""
     score_labels = ['極重要', '重要', '普通', '不認同', '極不認同']
     score_vals = [5, 4, 3, 2, 1]
 
@@ -826,6 +826,27 @@ def generate_comp_year_table(all_df, years):
             return data_df[fit_col].dropna()
         return pd.Series(dtype=float)
 
+    def _fill_score_distribution(row, series):
+        if series.empty:
+            for score_label in score_labels:
+                row[score_label] = np.nan
+            row['平均分數'] = np.nan
+            return
+
+        rounded = series.round().astype(int)
+        counts = rounded.value_counts()
+        total = float(len(rounded))
+        displayed_percentages = []
+        for score_label, score_value in zip(score_labels, score_vals):
+            percentage = round(counts.get(score_value, 0) / total * 100, 1)
+            row[score_label] = f"{percentage} %"
+            displayed_percentages.append(percentage)
+
+        row['平均分數'] = round(sum(
+            score_value * percentage / 100
+            for score_value, percentage in zip(score_vals, displayed_percentages)
+        ), 2)
+
     rows = []
     for idx, lbl in enumerate(comp_labels):
         # 各年度列
@@ -835,36 +856,20 @@ def generate_comp_year_table(all_df, years):
             row = OrderedDict()
             row['核心能力'] = lbl
             row['學年度'] = f'{yr}'
-            if s.empty:
-                for sl in score_labels:
-                    row[sl] = np.nan
-            else:
-                rounded = s.round().astype(int)
-                counts = rounded.value_counts()
-                total = float(len(rounded))
-                for sl, sv in zip(score_labels, score_vals):
-                    row[sl] = (
-                        f"{round(counts.get(sv, 0) / total * 100, 1)} %" if total > 0 else np.nan)
+            _fill_score_distribution(row, s)
             rows.append(row)
         # 合計列
         s_all = _comp_series(all_df, idx)
         row = OrderedDict()
         row['核心能力'] = lbl
         row['學年度'] = '合計'
-        if s_all.empty:
-            for sl in score_labels:
-                row[sl] = np.nan
-        else:
-            rounded = s_all.round().astype(int)
-            counts = rounded.value_counts()
-            total = float(len(rounded))
-            for sl, sv in zip(score_labels, score_vals):
-                row[sl] = (
-                    f"{round(counts.get(sv, 0) / total * 100, 1)} %" if total > 0 else np.nan)
+        _fill_score_distribution(row, s_all)
         rows.append(row)
         # 空白分隔列
         rows.append(OrderedDict(
-            [('核心能力', ''), ('學年度', '')] + [(sl, np.nan) for sl in score_labels]))
+            [('核心能力', ''), ('學年度', '')]
+            + [(sl, np.nan) for sl in score_labels]
+            + [('平均分數', np.nan)]))
 
     return pd.DataFrame(rows)
 

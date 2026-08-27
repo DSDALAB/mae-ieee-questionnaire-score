@@ -209,3 +209,8 @@ __marimo__/
 /docs
 /data
 /results
+
+# Local report source/output bundle and agent working files
+/final
+/work
+/.codebase-memory
